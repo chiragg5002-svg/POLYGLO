@@ -1,0 +1,7 @@
+[
+  { "timestamp": "2026-01-10T08:15:22Z", "level": "info", "service": "checkout-api", "message": "Order 4821 completed successfully" },
+  { "timestamp": "2026-01-10T08:16:03Z", "level": "error", "service": "payment-gateway", "message": "Card declined for order 4822" },
+  { "timestamp": "2026-01-10T08:17:45Z", "level": "warn", "service": "inventory-service", "message": "Stock for SKU-1002 is low" },
+  { "timestamp": "2026-01-10T08:18:12Z", "level": "info", "service": "checkout-api", "message": "Order 4823 completed successfully" },
+  { "timestamp": "2026-01-10T08:19:50Z", "level": "error", "service": "checkout-api", "message": "Timeout calling inventory-service for order 4824" }
+]

@@ -1,0 +1,22 @@
+/*
+ * Per-test-file environment (jest `setupFiles`).
+ *
+ * - Logs are silenced; runtime data/upload dirs point at a throw-away temp
+ *   dir so tests never touch data/metadata.json or uploads/.
+ * - MAESTRO_INSECURE_DEV=true is the explicit development flag that lets the
+ *   legacy business-logic suites call operator routes without a token. The
+ *   security suites (tests/security/*) override it and assert the real,
+ *   fail-closed behaviour.
+ */
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+process.env.MAESTRO_LOG_LEVEL = process.env.MAESTRO_LOG_LEVEL || "silent";
+if (!process.env.MAESTRO_DATA_DIR) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "maestro-test-"));
+  process.env.MAESTRO_DATA_DIR = path.join(dir, "data");
+  process.env.MAESTRO_UPLOAD_DIR = path.join(dir, "uploads");
+  process.env.MAESTRO_IMPORT_TMP = path.join(dir, "imports"); // per test file: parallel suites must not share it
+}
+if (process.env.MAESTRO_INSECURE_DEV === undefined) process.env.MAESTRO_INSECURE_DEV = "true";

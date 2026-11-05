@@ -1,0 +1,6 @@
+[
+  { "sku": "SKU-1001", "name": "Wireless Headphones", "price": 79.99, "tags": ["audio", "wireless", "bluetooth"], "specs": { "batteryLifeHours": 30, "color": "black" } },
+  { "sku": "SKU-1002", "name": "Standing Desk", "price": 349.00, "tags": ["furniture", "office"], "specs": { "weightKg": 42, "adjustable": true } },
+  { "sku": "SKU-1003", "name": "Mechanical Keyboard", "price": 129.50, "tags": ["peripherals", "typing"], "specs": { "switchType": "brown", "backlit": true } },
+  { "sku": "SKU-1004", "name": "USB-C Hub", "price": 39.00, "tags": ["accessories"], "specs": { "ports": 7, "color": "silver" } }
+]

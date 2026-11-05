@@ -1,0 +1,474 @@
+openapi: 3.0.3
+info:
+  title: MAESTRO Intelligent DBaaS API
+  version: 1.0.0
+  description: |
+    Multi-tenant database-as-a-service. Developers use logical **collections**;
+    MAESTRO decides whether each lives in PostgreSQL, MongoDB or Elasticsearch.
+
+    **Authentication**
+    - *Data plane* (`/v1/collections`, `/v1/data`, `/v1/query`, `/v1/import`, `/v1/usage`, `/v1/project`):
+      `Authorization: Bearer pk_<keyId>_<secret>` (a project API key). Each key carries scopes.
+    - *Control plane* (`/v1/projects...`, `/v1/audit`, `/metrics`): `Authorization: Bearer <MAESTRO_ADMIN_TOKEN>` (operator).
+    - *Client Portal* (`/v1/client/...`): same-origin `HttpOnly` session cookie; project ownership is checked on every request.
+      The database browse route additionally requires a project API key with `data:read`, matching the owned project.
+      Login is completed only after a five-minute email OTP is verified.
+    - Data-plane project identity is derived from the API key; the browse route also checks the selected project against the client session.
+
+    **Errors** always have the shape `{ "success": false, "message": "...", "error": { "code", "message", "requestId", "details"? } }`.
+    Send `X-Request-Id` to correlate; it is echoed back.
+servers:
+  - url: http://localhost:3000
+tags:
+  - {name: Operations}
+  - {name: Control plane}
+  - {name: Client Portal}
+  - {name: Collections}
+  - {name: Data}
+  - {name: Query}
+  - {name: Import}
+components:
+  securitySchemes:
+    ProjectKey: {type: http, scheme: bearer, description: "Project API key (pk_...)."}
+    Operator: {type: http, scheme: bearer, description: "MAESTRO_ADMIN_TOKEN."}
+    ClientSession: {type: apiKey, in: cookie, name: maestro_client_session, description: "HttpOnly client portal session cookie."}
+  schemas:
+    Error:
+      type: object
+      required: [success, message, error]
+      properties:
+        success: {type: boolean, enum: [false]}
+        message: {type: string}
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string, example: not_found}
+            message: {type: string}
+            requestId: {type: string}
+            details: {type: object}
+    Scopes:
+      type: array
+      items: {type: string, enum: ["data:read", "data:write", "collections:manage", import, "usage:read"]}
+    Document:
+      type: object
+      properties:
+        success: {type: boolean}
+        id: {type: string}
+        data: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ImportReport:
+      type: object
+      properties:
+        importId: {type: string}
+        status: {type: string, enum: [success, partial, failed, dry_run]}
+        success: {type: boolean}
+        summary:
+          type: object
+          properties: {total: {type: integer}, valid: {type: integer}, invalid: {type: integer}, inserted: {type: integer}, replaced: {type: integer}, skipped: {type: integer}, failed: {type: integer}, aborted: {type: string}}
+        errors: {type: array, items: {type: object, properties: {row: {type: integer}, message: {type: string}}}}
+        errorsTruncated: {type: boolean}
+        fieldMapping: {type: array, items: {type: object}}
+        schema: {type: object}
+        routing: {type: object}
+        warnings: {type: array, items: {type: string}}
+  responses:
+    Unauthorized: {description: Missing/invalid/revoked/expired credentials, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Forbidden: {description: "Insufficient scope, quota exceeded, or project mismatch", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    NotFound: {description: Not found, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    RateLimited: {description: Rate limited (see Retry-After), headers: {Retry-After: {schema: {type: integer}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unavailable: {description: "Storage/control plane temporarily unavailable (see Retry-After)", headers: {Retry-After: {schema: {type: integer}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  parameters:
+    projectId: {name: projectId, in: path, required: true, schema: {type: string, pattern: '^proj_[0-9a-f]{12}$'}}
+    keyId: {name: keyId, in: path, required: true, schema: {type: string}}
+    collection: {name: collection, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,47}$'}}
+    docId: {name: id, in: path, required: true, schema: {type: string}}
+paths:
+  /health:
+    get: {tags: [Operations], summary: Liveness probe (no dependency checks), responses: {'200': {description: ok}}}
+  /ready:
+    get:
+      tags: [Operations]
+      summary: Readiness probe. 200 when the control plane is reachable (Redis/MongoDB/Elasticsearch outages report "degraded"); 503 otherwise or while shutting down.
+      responses: {'200': {description: ready}, '503': {description: not ready}}
+  /metrics:
+    get:
+      tags: [Operations]
+      summary: Prometheus metrics (operator only)
+      security: [{Operator: []}]
+      responses: {'200': {description: text exposition format}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/openapi.yaml:
+    get: {tags: [Operations], summary: This document, responses: {'200': {description: OpenAPI YAML}}}
+
+  /v1/client/auth/register:
+    post:
+      tags: [Client Portal]
+      summary: Register an account; sign in and verify email before a session is issued
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [displayName, email, password], properties: {displayName: {type: string, minLength: 1, maxLength: 80}, email: {type: string, format: email}, password: {type: string, minLength: 12, maxLength: 128}}}}}}
+      responses: {'201': {description: Account created without an authenticated session}, '400': {description: Invalid input}, '409': {description: Email already registered}, '429': {$ref: '#/components/responses/RateLimited'}}
+  /v1/client/auth/login:
+    post:
+      tags: [Client Portal]
+      summary: Validate credentials and send an email OTP challenge without issuing a session
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [email, password], properties: {email: {type: string, format: email}, password: {type: string}}}}}}
+      responses: {'200': {description: OTP challenge ID, masked email, and expiry; no session cookie}, '401': {$ref: '#/components/responses/Unauthorized'}, '429': {$ref: '#/components/responses/RateLimited'}, '503': {$ref: '#/components/responses/Unavailable'}}
+  /v1/client/auth/verify-otp:
+    post:
+      tags: [Client Portal]
+      summary: Verify a one-time email code and issue the client session
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challengeId, otp], properties: {challengeId: {type: string}, otp: {type: string, pattern: '^[0-9]{6}$'}}}}}}
+      responses: {'200': {description: Verified; a rotated HttpOnly session cookie is set}, '401': {$ref: '#/components/responses/Unauthorized'}, '429': {$ref: '#/components/responses/RateLimited'}}
+  /v1/client/auth/resend-otp:
+    post:
+      tags: [Client Portal]
+      summary: Resend an active email OTP challenge after the cooldown
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [challengeId], properties: {challengeId: {type: string}}}}}}
+      responses: {'200': {description: Replacement code sent}, '401': {$ref: '#/components/responses/Unauthorized'}, '429': {$ref: '#/components/responses/RateLimited'}, '503': {$ref: '#/components/responses/Unavailable'}}
+  /v1/client/auth/logout:
+    post:
+      tags: [Client Portal]
+      summary: Revoke the current client session
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Signed out}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/auth/me:
+    get:
+      tags: [Client Portal]
+      summary: Get the signed-in client account
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Account}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/billing/plans:
+    get:
+      tags: [Client Portal]
+      summary: List available billing plans and configured rates
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Available plans}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/billing/subscription:
+    put:
+      tags: [Client Portal]
+      summary: Schedule a plan change for the next billing period
+      security: [{ClientSession: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [planId], properties: {planId: {type: string}}}}}}
+      responses: {'200': {description: Subscription change scheduled}, '400': {description: Invalid plan}, '401': {$ref: '#/components/responses/Unauthorized'}, '409': {description: Plan unavailable or pricing not configured}}
+  /v1/client/billing/usage:
+    get:
+      tags: [Client Portal]
+      summary: Current UTC period usage and explicitly estimated charges for the signed-in client
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Usage and measurement availability}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/billing/invoices:
+    get:
+      tags: [Client Portal]
+      summary: List invoices owned by the signed-in client
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Invoice snapshots}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/billing/invoices/{invoiceId}:
+    get:
+      tags: [Client Portal]
+      summary: Get an owned invoice and its itemized snapshot
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Invoice}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/client/billing/invoices/{invoiceId}/pdf:
+    get:
+      tags: [Client Portal]
+      summary: Download a PDF generated from the stored invoice snapshot
+      security: [{ClientSession: []}]
+      responses: {'200': {description: PDF invoice from the immutable issued snapshot, content: {application/pdf: {schema: {type: string, format: binary}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}, '409': {description: Invoice has not been issued}}
+  /v1/client/billing/payments:
+    get:
+      tags: [Client Portal]
+      summary: List manual payment records for the signed-in client
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Payment records}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/billing/export.csv:
+    get:
+      tags: [Client Portal]
+      summary: Download a CSV export of the signed-in client's billing summary
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Client-owned usage estimates, invoices and payment records, content: {text/csv: {schema: {type: string}}}}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/billing/profile:
+    put:
+      tags: [Client Portal]
+      summary: Update optional billing name, address, contact, and customer reference
+      security: [{ClientSession: []}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {billingName: {type: string}, billingAddress: {type: string}, billingContact: {type: string}, purchaseOrder: {type: string}}}}}}
+      responses: {'200': {description: Billing profile updated}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/projects:
+    get:
+      tags: [Client Portal]
+      summary: List projects owned by the signed-in client
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Owned projects}, '401': {$ref: '#/components/responses/Unauthorized'}}
+    post:
+      tags: [Client Portal]
+      summary: Create an owned project and its first API key (shown once)
+      security: [{ClientSession: []}]
+      parameters: [{name: Idempotency-Key, in: header, schema: {type: string, minLength: 8, maxLength: 128}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name], properties: {name: {type: string}, scopes: {$ref: '#/components/schemas/Scopes'}}}}}}
+      responses: {'201': {description: Project and one-time API key created}, '200': {description: Idempotent replay; key not returned}, '400': {description: Invalid project name or scopes}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/client/projects/{projectId}:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get:
+      tags: [Client Portal]
+      summary: Owned project details, key metadata, collections, usage and quotas
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Project details}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/client/projects/{projectId}/usage:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get:
+      tags: [Client Portal]
+      summary: Usage and quotas for an owned project
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Project usage}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/client/projects/{projectId}/browse/{collection}:
+    parameters:
+      - {$ref: '#/components/parameters/projectId'}
+      - {name: collection, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,47}$'}}
+      - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 50}}
+      - {name: offset, in: query, schema: {type: integer, minimum: 0, maximum: 1000000, default: 0}}
+    get:
+      tags: [Client Portal]
+      summary: Browse one page of an owned project's collection
+      description: Requires an authenticated client session and a project API key with data:read for the same owned project. Portal search filters only the loaded page.
+      security:
+        - ClientSession: []
+          ProjectKey: []
+      responses:
+        '200': {description: Records in the requested page}
+        '400': {description: Invalid collection name or pagination parameters}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {description: API key belongs to another project or lacks data:read}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/client/projects/{projectId}/keys:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get:
+      tags: [Client Portal]
+      summary: List API-key metadata without secrets
+      security: [{ClientSession: []}]
+      responses: {'200': {description: API keys}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+    post:
+      tags: [Client Portal]
+      summary: Create a scoped API key for an owned project (shown once)
+      security: [{ClientSession: []}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {label: {type: string, maxLength: 60}, scopes: {$ref: '#/components/schemas/Scopes'}, expiresInDays: {type: integer, minimum: 1, maximum: 3650}}}}}}
+      responses: {'201': {description: API key created; secret returned once}, '400': {description: Invalid scopes or expiry}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/client/projects/{projectId}/keys/{keyId}:
+    parameters: [{$ref: '#/components/parameters/projectId'}, {$ref: '#/components/parameters/keyId'}]
+    delete:
+      tags: [Client Portal]
+      summary: Revoke an API key for an owned project
+      security: [{ClientSession: []}]
+      responses: {'200': {description: Revoked}, '401': {$ref: '#/components/responses/Unauthorized'}, '404': {$ref: '#/components/responses/NotFound'}}
+
+  /v1/projects:
+    post:
+      tags: [Control plane]
+      summary: Create a project and its first API key (shown once). Send Idempotency-Key to make retries safe.
+      security: [{Operator: []}]
+      parameters: [{name: Idempotency-Key, in: header, schema: {type: string, minLength: 8, maxLength: 128}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name], properties: {name: {type: string}, scopes: {$ref: '#/components/schemas/Scopes'}, expiresInDays: {type: integer}}}}}}
+      responses: {'201': {description: created (apiKey returned once)}, '200': {description: replay of an Idempotency-Key (no key returned)}, '401': {$ref: '#/components/responses/Unauthorized'}}
+    get: {tags: [Control plane], summary: List projects, security: [{Operator: []}], responses: {'200': {description: ok}, '401': {$ref: '#/components/responses/Unauthorized'}}}
+  /v1/projects/{projectId}:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get: {tags: [Control plane], summary: Project details (collections, keys, quotas), security: [{Operator: []}], responses: {'200': {description: ok}, '404': {$ref: '#/components/responses/NotFound'}}}
+    delete:
+      tags: [Control plane]
+      summary: Delete a project (revokes keys). `?purge=true` also drops its stored data; if any store fails the project is kept and 502 purge_incomplete lists each store.
+      security: [{Operator: []}]
+      parameters: [{name: purge, in: query, schema: {type: boolean}}]
+      responses: {'200': {description: deleted}, '502': {description: purge_incomplete}}
+  /v1/projects/{projectId}/keys:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    post:
+      tags: [Control plane]
+      summary: Create an API key with scopes and optional expiry
+      security: [{Operator: []}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {label: {type: string}, scopes: {$ref: '#/components/schemas/Scopes'}, expiresInDays: {type: integer}, expiresAt: {type: string, format: date-time}}}}}}
+      responses: {'201': {description: created (apiKey returned once)}}
+  /v1/projects/{projectId}/keys/{keyId}:
+    parameters: [{$ref: '#/components/parameters/projectId'}, {$ref: '#/components/parameters/keyId'}]
+    delete: {tags: [Control plane], summary: Revoke a key, security: [{Operator: []}], responses: {'200': {description: revoked}, '404': {$ref: '#/components/responses/NotFound'}}}
+  /v1/projects/{projectId}/keys/{keyId}/rotate:
+    parameters: [{$ref: '#/components/parameters/projectId'}, {$ref: '#/components/parameters/keyId'}]
+    post:
+      tags: [Control plane]
+      summary: Rotate a key (same scopes). `graceSeconds` (0-604800) keeps the old key valid for a while.
+      security: [{Operator: []}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {graceSeconds: {type: integer}, label: {type: string}}}}}}
+      responses: {'201': {description: new key (returned once)}}
+  /v1/projects/{projectId}/usage:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get: {tags: [Control plane], summary: Usage and storage for a project, security: [{Operator: []}], responses: {'200': {description: ok}}}
+  /v1/projects/{projectId}/quotas:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get: {tags: [Control plane], summary: Effective quotas, security: [{Operator: []}], responses: {'200': {description: ok}}}
+    put:
+      tags: [Control plane]
+      summary: "Override quotas: maxCollections, maxDocuments, maxStorageBytes, maxImportRows, requestsPerMinute"
+      security: [{Operator: []}]
+      requestBody: {content: {application/json: {schema: {type: object, additionalProperties: {type: integer, minimum: 1}}}}}
+      responses: {'200': {description: updated}, '400': {description: invalid quota}}
+  /v1/projects/{projectId}/imports:
+    parameters: [{$ref: '#/components/parameters/projectId'}]
+    get: {tags: [Control plane], summary: Import history (counts only), security: [{Operator: []}], responses: {'200': {description: ok}}}
+  /v1/audit:
+    get:
+      tags: [Control plane]
+      summary: Audit trail of administrative actions (never contains secrets)
+      security: [{Operator: []}]
+      parameters: [{name: projectId, in: query, schema: {type: string}}, {name: limit, in: query, schema: {type: integer, maximum: 500}}, {name: before, in: query, schema: {type: integer}}]
+      responses: {'200': {description: ok}}
+  /v1/billing/clients:
+    get: {tags: [Control plane], summary: List client billing profiles, security: [{Operator: []}], responses: {'200': {description: Client billing profiles}}}
+  /v1/billing/plans:
+    get: {tags: [Control plane], summary: List INR pricing plans, security: [{Operator: []}], responses: {'200': {description: Pricing plans}}}
+  /v1/billing/plans/{planId}:
+    put:
+      tags: [Control plane]
+      summary: Create or update INR monthly and usage pricing for a plan (rates are integer paise)
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name, storagePaisePerGbMonth, requestsPerUnit, requestUnitPaise, transferPaisePerGb], properties: {name: {type: string}, monthlyFeePaise: {type: integer, minimum: 0}, storagePaisePerGbMonth: {type: integer, minimum: 0}, requestsPerUnit: {type: integer, minimum: 1}, requestUnitPaise: {type: integer, minimum: 0}, transferPaisePerGb: {type: integer, minimum: 0}, active: {type: boolean}, pricingConfigured: {type: boolean}}}}}}
+      responses: {'200': {description: Pricing plan updated}, '400': {description: Invalid plan}}
+  /v1/billing/storage-snapshots:
+    post:
+      tags: [Control plane]
+      summary: Capture idempotent project-level logical storage snapshots for a UTC date
+      security: [{Operator: []}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {date: {type: string, format: date}}}}}}
+      responses: {'200': {description: Per-project storage availability}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/billing/reconcile:
+    post:
+      tags: [Control plane]
+      summary: Rebuild daily request and transfer aggregates idempotently in UTC
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [start, end], properties: {start: {type: string, format: date}, end: {type: string, format: date}, projectId: {type: string}}}}}}
+      responses: {'200': {description: Reconciled}, '400': {description: Invalid date range}}
+  /v1/billing/usage:
+    get:
+      tags: [Control plane]
+      summary: Inspect a client's reconciled usage and measurement availability
+      security: [{Operator: []}]
+      parameters: [{name: clientId, in: query, required: true, schema: {type: string}}, {name: start, in: query, schema: {type: string, format: date}}, {name: end, in: query, schema: {type: string, format: date}}]
+      responses: {'200': {description: Daily usage}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/billing/invoices:
+    get: {tags: [Control plane], summary: List invoices for operator review, security: [{Operator: []}], responses: {'200': {description: Invoice list}}}
+  /v1/billing/invoices/drafts:
+    post:
+      tags: [Control plane]
+      summary: Generate an idempotent draft invoice from measured, reconciled usage
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [clientId, periodStart, periodEnd], properties: {clientId: {type: string}, periodStart: {type: string, format: date}, periodEnd: {type: string, format: date}}}}}}
+      responses: {'201': {description: Draft generated}, '200': {description: Existing period invoice returned}, '409': {description: A required usage measurement is unavailable}}
+  /v1/billing/invoices/{invoiceId}/issue:
+    post:
+      tags: [Control plane]
+      summary: Issue a reviewed invoice and freeze its pricing and client snapshot
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, maxLength: 500}, dueDate: {type: string, format: date}}}}}}
+      responses: {'200': {description: Issued invoice}, '409': {description: Invalid lifecycle transition}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/billing/invoices/{invoiceId}/review:
+    post:
+      tags: [Control plane]
+      summary: Mark a draft invoice reviewed with an auditable reason
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, maxLength: 500}}}}}}
+      responses: {'200': {description: Reviewed invoice}, '409': {description: Invalid lifecycle transition}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/billing/invoices/{invoiceId}/void:
+    post:
+      tags: [Control plane]
+      summary: Void an unpaid invoice with an auditable reason
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, maxLength: 500}}}}}}
+      responses: {'200': {description: Voided invoice}, '409': {description: Invalid lifecycle transition}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/billing/payments:
+    post:
+      tags: [Control plane]
+      summary: Record an authorized manual payment; this does not process a payment
+      security: [{Operator: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [invoiceId, amountPaise, reference], properties: {invoiceId: {type: string}, amountPaise: {type: string, pattern: '^[1-9][0-9]*$'}, reference: {type: string}}}}}}
+      responses: {'201': {description: Manual payment recorded}, '409': {description: Invalid payment or overpayment}, '404': {$ref: '#/components/responses/NotFound'}}
+  /v1/billing/audit:
+    get: {tags: [Control plane], summary: Read billing lifecycle audit history, security: [{Operator: []}], responses: {'200': {description: Billing audit events}}}
+  /v1/billing/export.csv:
+    get:
+      tags: [Control plane]
+      summary: Export detailed usage or invoice line items as CSV
+      security: [{Operator: []}]
+      parameters: [{name: kind, in: query, schema: {type: string, enum: [usage, invoices]}}, {name: start, in: query, schema: {type: string, format: date}}, {name: end, in: query, schema: {type: string, format: date}}]
+      responses: {'200': {description: CSV export, content: {text/csv: {schema: {type: string}}}}, '400': {description: Invalid export range}}
+
+  /v1/project:
+    get: {tags: [Collections], summary: The project this key belongs to (and the key's scopes), security: [{ProjectKey: []}], responses: {'200': {description: ok}, '401': {$ref: '#/components/responses/Unauthorized'}}}
+  /v1/collections:
+    post:
+      tags: [Collections]
+      summary: Create a collection. MAESTRO analyses `sampleData` (or honours `storageHint`) to choose the store. Needs scope collections:manage.
+      security: [{ProjectKey: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name], properties: {name: {type: string}, sampleData: {type: object}, storageHint: {type: string, enum: [postgresql, mongodb, elasticsearch]}}}}}}
+      responses: {'201': {description: created}, '403': {$ref: '#/components/responses/Forbidden'}, '409': {description: exists}}
+    get: {tags: [Collections], summary: List collections (data:read), security: [{ProjectKey: []}], responses: {'200': {description: ok}}}
+  /v1/collections/{name}:
+    parameters: [{name: name, in: path, required: true, schema: {type: string}}]
+    get: {tags: [Collections], summary: Collection details incl. chosen store (data:read), security: [{ProjectKey: []}], responses: {'200': {description: ok}, '404': {$ref: '#/components/responses/NotFound'}}}
+    delete: {tags: [Collections], summary: Drop a collection and its data (collections:manage), security: [{ProjectKey: []}], responses: {'200': {description: deleted}}}
+  /v1/data:
+    post:
+      tags: [Data]
+      summary: Insert a document (auto-creates the collection). Needs data:write; refused with 403 quota_exceeded at the document/storage quota.
+      security: [{ProjectKey: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [collection, data], properties: {collection: {type: string}, data: {type: object}}}}}}
+      responses: {'201': {description: created, content: {application/json: {schema: {$ref: '#/components/schemas/Document'}}}}, '403': {$ref: '#/components/responses/Forbidden'}, '429': {$ref: '#/components/responses/RateLimited'}, '503': {$ref: '#/components/responses/Unavailable'}}
+  /v1/data/{collection}:
+    parameters: [{$ref: '#/components/parameters/collection'}]
+    get:
+      tags: [Data]
+      summary: List documents (data:read) with `filters` (JSON), `sort`, `limit`, `offset`
+      security: [{ProjectKey: []}]
+      parameters: [{name: filters, in: query, schema: {type: string}}, {name: sort, in: query, schema: {type: string}}, {name: limit, in: query, schema: {type: integer}}, {name: offset, in: query, schema: {type: integer}}]
+      responses: {'200': {description: ok}}
+  /v1/data/{collection}/{id}:
+    parameters: [{$ref: '#/components/parameters/collection'}, {$ref: '#/components/parameters/docId'}]
+    get: {tags: [Data], summary: Get by id (data:read), security: [{ProjectKey: []}], responses: {'200': {description: ok}, '404': {$ref: '#/components/responses/NotFound'}}}
+    put: {tags: [Data], summary: Replace (data:write), security: [{ProjectKey: []}], requestBody: {required: true, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object}}}}}}, responses: {'200': {description: ok}}}
+    patch: {tags: [Data], summary: Merge top-level fields (data:write), security: [{ProjectKey: []}], requestBody: {required: true, content: {application/json: {schema: {type: object, required: [data], properties: {data: {type: object}}}}}}, responses: {'200': {description: ok}}}
+    delete: {tags: [Data], summary: Delete (data:write), security: [{ProjectKey: []}], responses: {'200': {description: deleted}, '404': {$ref: '#/components/responses/NotFound'}}}
+  /v1/query:
+    post:
+      tags: [Query]
+      summary: Project-scoped query (data:read). Operators eq ne gt gte lt lte in; queryType select|count|search.
+      security: [{ProjectKey: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [collection], properties: {collection: {type: string}, queryType: {type: string, enum: [select, count, search]}, filters: {type: object}, text: {type: string}, fields: {type: array, items: {type: string}}, sort: {type: object}, limit: {type: integer}, offset: {type: integer}}}}}}
+      responses: {'200': {description: ok (cached flag shows whether Redis served it)}}
+  /v1/import:
+    post:
+      tags: [Import]
+      summary: |
+        Bulk import a CSV/TSV/JSON/NDJSON file (needs scopes `import` and `data:write`).
+        200 dry run · 201 success · **207 partial (some rows failed - never reported as success)** · 422 nothing imported · 413 too large.
+        Use `idField` + `onDuplicate=skip` for idempotent retries.
+      security: [{ProjectKey: []}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [collection, file]
+              properties:
+                collection: {type: string}
+                file: {type: string, format: binary}
+                dryRun: {type: boolean}
+                idField: {type: string}
+                onDuplicate: {type: string, enum: [skip, error, replace]}
+                storageHint: {type: string, enum: [postgresql, mongodb, elasticsearch]}
+      responses:
+        '200': {description: dry run report, content: {application/json: {schema: {$ref: '#/components/schemas/ImportReport'}}}}
+        '201': {description: success, content: {application/json: {schema: {$ref: '#/components/schemas/ImportReport'}}}}
+        '207': {description: partial, content: {application/json: {schema: {$ref: '#/components/schemas/ImportReport'}}}}
+        '413': {description: file/row limit exceeded}
+        '422': {description: failed}
+  /v1/imports:
+    get: {tags: [Import], summary: Import history for this project (scope import), security: [{ProjectKey: []}], responses: {'200': {description: ok}}}
+  /v1/usage:
+    get: {tags: [Collections], summary: Usage, storage and quotas (usage:read), security: [{ProjectKey: []}], responses: {'200': {description: ok}}}

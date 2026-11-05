@@ -1,0 +1,37 @@
+# Never bake real or example env/secret files into the image —
+# runtime config always comes from docker-compose's `environment:`
+# instead (see .env.docker.example).
+.env
+.env.*
+!.env.example
+
+# Dependencies are installed fresh in the image (see Dockerfile's
+# `deps` stage); a host node_modules would be the wrong platform/arch
+# anyway.
+node_modules
+
+# Local runtime data — these are bind/volume-mounted at run time
+# (docker-compose.yml's `uploads_data` / `metadata_data` volumes), so
+# whatever happens to be on disk when you run `docker build` shouldn't
+# ship inside the image layer.
+uploads/*
+!uploads/.gitkeep
+data/*.json
+
+# Dev/test/doc/VCS files not needed at runtime.
+.git
+.gitignore
+tests
+coverage
+benchmarks
+scripts
+.github
+backups
+*.md
+*.pptx
+*.zip
+npm-debug.log*
+
+# Compose files are read by the Docker CLI on the host, not needed
+# inside the image itself.
+docker-compose*.yml

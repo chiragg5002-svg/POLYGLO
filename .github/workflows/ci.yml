@@ -1,0 +1,72 @@
+# CI: unit + live-service tests, coverage gate, secret scan, dependency audit.
+# NOTE: this workflow was written alongside the code but has NOT been executed on
+# GitHub in the environment it was authored in (no GitHub runner was available);
+# each command in it was run locally. Treat the first CI run as part of acceptance.
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_PASSWORD: ci-postgres-password}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+      mongodb:
+        image: mongo:7
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'" --health-interval 10s --health-timeout 5s --health-retries 10
+      elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+        env:
+          discovery.type: single-node
+          xpack.security.enabled: "false"
+          ES_JAVA_OPTS: -Xms512m -Xmx512m
+        ports: ["9200:9200"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health" --health-interval 10s --health-timeout 5s --health-retries 20
+    env:
+      PG_HOST: localhost
+      PG_USER: postgres
+      PG_PASSWORD: ci-postgres-password
+      REDIS_URL: redis://localhost:6379
+      MONGO_URI: mongodb://localhost:27017
+      ELASTICSEARCH_URL: http://localhost:9200
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm ci
+      - name: Secret scan
+        run: node scripts/secret-scan.js
+      - name: Tests with coverage (real PostgreSQL, Redis, MongoDB and Elasticsearch)
+        run: npx jest --runInBand --forceExit --coverage
+      - name: Routing benchmark (rule-only)
+        run: node benchmarks/routing/run.js
+      - name: Failure-injection tests are run manually (they stop/start services); see TEST_REPORT.md
+        run: echo "skipped in CI by design"
+      - name: Dependency audit (read-only; does not modify anything)
+        run: npm audit --omit=dev --audit-level=high
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: reports, path: "coverage/lcov.info\nbenchmarks/results/*.json"}
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: gitleaks/gitleaks-action@v2
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}

@@ -1,0 +1,10 @@
+{
+  "name": "maestro-sdk",
+  "version": "1.0.0",
+  "description": "Lightweight JavaScript SDK for the MAESTRO intelligent database-as-a-service API",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "ISC",
+  "engines": { "node": ">=18" },
+  "files": ["index.js", "index.d.ts", "README.md"]
+}

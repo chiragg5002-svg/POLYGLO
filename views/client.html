@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>MAESTRO Client Portal</title>
+  <link rel="stylesheet" href="/static/client.css?v=20261022" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <a class="back-link" href="/">MAESTRO</a>
+      <h1>Client Portal</h1>
+      <p>Manage your projects, API keys, collections, and usage.</p>
+    </header>
+
+    <section id="auth-view" class="card">
+      <div class="tabs" role="tablist">
+        <button type="button" id="show-login" class="tab active" role="tab" aria-selected="true">Sign in</button>
+        <button type="button" id="show-register" class="tab" role="tab" aria-selected="false">Create account</button>
+      </div>
+      <form id="login-form">
+        <h2>Sign in</h2>
+        <label for="login-email">Email</label>
+        <input id="login-email" type="email" autocomplete="username" maxlength="254" required />
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password" maxlength="128" required />
+        <button type="submit">Sign in</button>
+      </form>
+      <form id="register-form" hidden>
+        <h2>Create a client account</h2>
+        <label for="register-name">Name</label>
+        <input id="register-name" type="text" autocomplete="name" maxlength="80" required />
+        <label for="register-email">Email</label>
+        <input id="register-email" type="email" autocomplete="email" maxlength="254" required />
+        <label for="register-password">Password</label>
+        <input id="register-password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required />
+        <p class="hint">Use at least 12 characters. Passwords are stored as scrypt hashes.</p>
+        <button type="submit">Create account</button>
+      </form>
+      <p id="auth-status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="dashboard" hidden>
+      <div class="account-bar card">
+        <div><span class="muted">Signed in as</span><strong id="account-label"></strong></div>
+        <button type="button" id="sign-out" class="secondary">Sign out</button>
+      </div>
+
+      <p id="portal-status" class="status" role="status" aria-live="polite"></p>
+      <nav class="portal-nav" aria-label="Client portal">
+        <a id="nav-projects" class="portal-nav-item active" href="/client" aria-current="page">Projects</a>
+        <a id="nav-billing" class="portal-nav-item" href="/client/billing" target="_blank" rel="noopener">Billing</a>
+      </nav>
+      <div id="projects-view" class="layout">
+        <aside class="card">
+          <h2>Your projects</h2>
+          <form id="project-form" class="compact-form">
+            <label for="project-name">Create a project</label>
+            <input id="project-name" type="text" maxlength="100" placeholder="Inventory app" required />
+            <fieldset>
+              <legend>Initial API-key permissions</legend>
+              <label class="check"><input type="checkbox" name="project-scope" value="data:read" checked /> Read data</label>
+              <label class="check"><input type="checkbox" name="project-scope" value="data:write" checked /> Write data</label>
+              <label class="check"><input type="checkbox" name="project-scope" value="collections:manage" checked /> Manage collections</label>
+              <label class="check"><input type="checkbox" name="project-scope" value="usage:read" checked /> Read usage</label>
+            </fieldset>
+            <button type="submit">Create project</button>
+          </form>
+          <div id="project-list"><p class="muted">No projects loaded.</p></div>
+        </aside>
+
+        <div class="main-column">
+          <section id="browse-database" class="card browse-panel" aria-labelledby="browse-title">
+            <h2 id="browse-title">Browse Database</h2>
+            <p class="muted browse-description">Browse records in a project you own. Your project API key must include <code>data:read</code>; it is used for this tab only and is not saved.</p>
+            <div class="browse-controls">
+              <div>
+                <label for="browse-project">Project</label>
+                <select id="browse-project" aria-label="Project to browse">
+                  <option value="">Select a project</option>
+                </select>
+              </div>
+              <div>
+                <label for="browse-collection">Collection</label>
+                <select id="browse-collection" aria-label="Collection to browse" disabled>
+                  <option value="">Select a project first</option>
+                </select>
+              </div>
+              <div>
+                <label for="browse-api-key">Project API key</label>
+                <input id="browse-api-key" type="password" autocomplete="off" spellcheck="false"
+                  aria-describedby="browse-key-hint" placeholder="Paste a key with data:read" />
+                <p id="browse-key-hint" class="hint">The key is held only in page memory and sent only to MAESTRO's same-origin browse endpoint.</p>
+              </div>
+            </div>
+            <div class="browse-toolbar">
+              <p id="browse-collection-info" class="muted" aria-live="polite">Select a project and collection.</p>
+              <button id="browse-refresh" type="button" disabled>Browse / Refresh</button>
+            </div>
+            <div class="browse-search">
+              <label for="browse-search">Search loaded records</label>
+              <input id="browse-search" type="search" placeholder="Search this page's record data" disabled />
+              <p class="hint">Search filters only the records loaded on the current page. Use Next to browse more records.</p>
+            </div>
+            <p id="browse-status" class="status" role="status" aria-live="polite"></p>
+            <p id="browse-count" class="muted" aria-live="polite"></p>
+            <p id="browse-empty" class="muted" hidden>No records in this collection.</p>
+            <div id="browse-table-wrap" class="browse-table-wrap" role="region" aria-label="Browse records table" tabindex="0" hidden>
+              <table id="browse-table" aria-label="Records in selected collection">
+                <thead><tr id="browse-head"></tr></thead>
+                <tbody id="browse-body"></tbody>
+              </table>
+            </div>
+            <div class="browse-pagination" aria-label="Record pages">
+              <button id="browse-previous" type="button" class="secondary" disabled>Previous</button>
+              <span id="browse-page-label" class="muted">Page 1</span>
+              <button id="browse-next" type="button" class="secondary" disabled>Next</button>
+            </div>
+          </section>
+          <section id="project-detail" class="card">
+            <p class="muted">Select a project or create one to get started.</p>
+          </section>
+          <section id="connection-guide" class="card" hidden>
+            <h2>Connect your application</h2>
+            <p>API base URL: <code id="api-base"></code></p>
+            <p>Project ID: <code id="guide-project-id"></code>. The API key is project-bound, so requests do not send a client-supplied project ID.</p>
+            <p>Keep API keys in a server-side secret manager or environment variable. Never commit a key or send it to browser code.</p>
+            <h3>List collections</h3>
+            <pre id="get-example"></pre>
+            <h3>Read records</h3>
+            <pre id="read-example"></pre>
+            <h3>Write a record</h3>
+            <pre id="post-example"></pre>
+            <p class="muted">Use the returned record ID with <code>GET /v1/data/{collection}/{id}</code> or <code>PUT /v1/data/{collection}/{id}</code>. A read-only key receives HTTP 403 on writes.</p>
+            <p class="muted">Common errors: 400 invalid input; 401 missing, expired, or revoked credentials; 403 insufficient scope or quota; 404 unknown project, collection, or record.</p>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="secret-dialog">
+      <h2 id="secret-title">New API key</h2>
+      <p class="warning">This secret is shown only once. Copy it now and keep it private.</p>
+      <pre id="secret-value"></pre>
+      <div class="button-row">
+        <button type="button" id="copy-secret">Copy key</button>
+        <button type="button" id="close-secret" class="secondary">Done</button>
+      </div>
+      <p id="secret-status" class="status" role="status"></p>
+    </dialog>
+  </main>
+  <script src="/static/client.js?v=20261022-password-login"></script>
+</body>
+</html>

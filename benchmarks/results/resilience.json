@@ -1,0 +1,100 @@
+{
+  "generatedAt": "2026-10-11T02:13:46.717Z",
+  "results": [
+    {
+      "name": "baseline: query works and second identical query is a cache hit",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "baseline: /ready is ready (optional backends may be absent)",
+      "ok": true,
+      "detail": "{\"controlPlane\":\"ok\",\"redis\":\"ok\",\"mongodb\":\"ok\",\"elasticsearch\":\"unavailable\"}"
+    },
+    {
+      "name": "Redis down: reads still succeed from the database (cached=false)",
+      "ok": true,
+      "detail": "9ms"
+    },
+    {
+      "name": "Redis down: writes still succeed",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Redis down: /ready reports degraded but stays ready (200)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Redis down: no stale data (the new row is visible)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Redis back: caching resumes without a restart",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "Redis back: data written during the outage is served correctly",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "PostgreSQL down: request fails fast with 503 storage_unavailable (no hang, no stack)",
+      "ok": true,
+      "detail": "status 503 in 5ms"
+    },
+    {
+      "name": "PostgreSQL down: /health (liveness) stays 200",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "PostgreSQL down: /ready returns 503",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "PostgreSQL down: a burst of 20 requests all fail cleanly (none hang or crash the process)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "PostgreSQL back: service recovers without a restart",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "PostgreSQL back: no data was lost (6 documents)",
+      "ok": true,
+      "detail": "count 6"
+    },
+    {
+      "name": "kill -9 mid-import: server restarts, collection is usable, rows imported so far are intact",
+      "ok": true,
+      "detail": "1801/40000 rows present"
+    },
+    {
+      "name": "kill -9 mid-import: re-running the SAME file (idField+skip) completes with exactly 40000 rows, no duplicates",
+      "ok": true,
+      "detail": "inserted 38199, skipped 1801, total 40000"
+    },
+    {
+      "name": "SIGTERM: an in-flight request still completes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "SIGTERM: process exits cleanly (code 0)",
+      "ok": true,
+      "detail": "exit code 0"
+    },
+    {
+      "name": "SIGTERM: no secrets in server logs",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

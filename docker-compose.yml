@@ -1,0 +1,199 @@
+# Local/dev stack for MAESTRO / POLYGLODB: the API plus all four
+# backing databases. This is the same "just works" dev experience as
+# before, with one addition — the `api` service itself is now
+# included, so `docker compose up` alone gives you the whole stack
+# with nothing installed on the host except Docker.
+#
+# Nothing here talks to any cloud API — everything binds to
+# localhost/the compose network only. No password or connection
+# string is hardcoded below: every credential is an environment
+# variable with a *local-development-only* fallback default (so the
+# file still works out of the box for `docker compose up` and stays
+# safe to read/commit). For anything beyond local dev — real
+# passwords, DB auth turned on, ports not published to the host,
+# resource limits — see `.env.docker.example` and
+# `docker-compose.prod.yml`, which layer on top of this file and
+# never modify it:
+#
+#   cp .env.docker.example .env.docker   # fill in real secrets
+#   docker compose --env-file .env.docker \
+#     -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Usage (plain local dev):
+#   docker compose up -d           # start API + all four databases
+#   docker compose ps              # check they're all healthy
+#   curl http://localhost:3000/health
+#   docker compose logs -f api     # follow the API's own logs
+#   npm run test:integration       # run tests/integration/ from the
+#                                   # host against these containers
+#   docker compose down -v         # stop and wipe all data volumes
+#
+# Running the API natively (`npm start`) instead of in Docker still
+# works exactly as before — see QUICK_START.md / README.md. In that
+# case just start the databases and skip the api container so you
+# don't end up with two processes both trying to bind :3000:
+#   docker compose up -d postgres mongodb elasticsearch redis
+#
+# Ollama is intentionally NOT included here — it's normally run as a
+# native install (`ollama serve`) rather than in Docker, so it can use
+# GPU acceleration where available. See QUICK_START.md for installing
+# it locally. tests/integration/ollama.test.js soft-skips automatically
+# if nothing is reachable at OLLAMA_HOST:OLLAMA_PORT. Inside the `api`
+# container, `host.docker.internal` (the default below, wired up via
+# `extra_hosts` for native Linux Docker too) reaches a native Ollama
+# running on the host.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    entrypoint:
+      - node
+      - server.js
+    container_name: maestro-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-3000}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+      MAESTRO_OTP_PEPPER: ${MAESTRO_OTP_PEPPER}
+      # Hostnames below are the other services' Compose network
+      # aliases (not secrets) — they only resolve inside this
+      # project's network. Credentials still come from env vars.
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: ${POSTGRES_USER:-postgres}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PG_DATABASE: ${POSTGRES_DB:-postgres}
+      MONGO_URI: mongodb://mongodb:27017
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      REDIS_URL: redis://redis:6379
+      QUERY_CACHE_ENABLED: ${QUERY_CACHE_ENABLED:-true}
+      QUERY_CACHE_TTL_SECONDS: ${QUERY_CACHE_TTL_SECONDS:-60}
+      # Optional: only used if you call the Gemini-backed routes.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_HOST: ${OLLAMA_HOST:-host.docker.internal}
+      OLLAMA_PORT: ${OLLAMA_PORT:-11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      OLLAMA_TIMEOUT_MS: ${OLLAMA_TIMEOUT_MS:-30000}
+      FEDERATION_MAX_SOURCE_ROWS: ${FEDERATION_MAX_SOURCE_ROWS:-2000}
+      FEDERATION_DEFAULT_RESULT_ROWS: ${FEDERATION_DEFAULT_RESULT_ROWS:-200}
+      FEDERATION_MAX_RESULT_ROWS: ${FEDERATION_MAX_RESULT_ROWS:-1000}
+      FEDERATION_TIMEOUT_MS: ${FEDERATION_TIMEOUT_MS:-10000}
+      # ---- DBaaS platform (see DBaaS.md). No new services are needed:
+      # the control plane lives in a `maestro_control` database inside
+      # the existing PostgreSQL container. Secrets come from .env.docker.
+      MAESTRO_ADMIN_TOKEN: ${MAESTRO_ADMIN_TOKEN:-}
+      MAESTRO_KEY_PEPPER: ${MAESTRO_KEY_PEPPER:-}
+      MAESTRO_CORS_ORIGINS: ${MAESTRO_CORS_ORIGINS:-http://localhost:5500}
+      MAESTRO_RATE_LIMIT_PER_MINUTE: ${MAESTRO_RATE_LIMIT_PER_MINUTE:-600}
+      MAESTRO_ROUTING_USE_OLLAMA: ${MAESTRO_ROUTING_USE_OLLAMA:-true}
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - uploads_data:/app/uploads
+      - metadata_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3000/health",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: maestro-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongodb:
+    image: mongo:7
+    container_name: maestro-mongodb
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    container_name: maestro-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:9200/_cluster/health || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7
+    container_name: maestro-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  mongo_data:
+  elasticsearch_data:
+  redis_data:
+  uploads_data:
+  metadata_data:

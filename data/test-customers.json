@@ -1,0 +1,20 @@
+[
+  {
+    "customer_id": 1,
+    "name": "Arun",
+    "purchase_count": 2,
+    "created_date": "2024-01-01"
+  },
+  {
+    "customer_id": 2,
+    "name": "Priya",
+    "purchase_count": 5,
+    "created_date": "2024-01-02"
+  },
+  {
+    "customer_id": 3,
+    "name": "Rahul",
+    "purchase_count": 20,
+    "created_date": "2024-01-03"
+  }
+]

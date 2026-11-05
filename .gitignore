@@ -1,0 +1,19 @@
+node_modules/
+
+# Real env/secret files — .env.example and .env.docker.example are
+# templates and stay tracked.
+.env
+.env.local
+.env.docker
+
+# Local runtime data
+uploads/*
+!uploads/.gitkeep
+data/metadata.json
+
+npm-debug.log*
+coverage/
+
+backups/
+*.dump
+dump.rdb

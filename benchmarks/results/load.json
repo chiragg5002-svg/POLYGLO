@@ -1,0 +1,101 @@
+{
+  "generatedAt": "2026-10-11T02:09:52.675Z",
+  "node": "v22.22.2",
+  "cpus": 1,
+  "concurrency": 32,
+  "secondsPerPhase": 6,
+  "phases": [
+    {
+      "phase": "read: cached query (same query)",
+      "requests": 3763,
+      "rps": 623.7,
+      "errorRate": 0,
+      "statuses": {
+        "200": 3763
+      },
+      "latencyMs": {
+        "p50": 45.4,
+        "p95": 92.5,
+        "p99": 122.6,
+        "max": 154.3
+      }
+    },
+    {
+      "phase": "read: uncached query (unique filter)",
+      "requests": 5108,
+      "rps": 848.8,
+      "errorRate": 0,
+      "statuses": {
+        "200": 5108
+      },
+      "latencyMs": {
+        "p50": 31.8,
+        "p95": 72.5,
+        "p99": 116.3,
+        "max": 151.8
+      }
+    },
+    {
+      "phase": "read: get by id",
+      "requests": 8687,
+      "rps": 1446.1,
+      "errorRate": 0,
+      "statuses": {
+        "200": 8687
+      },
+      "latencyMs": {
+        "p50": 19.2,
+        "p95": 40.7,
+        "p99": 57.3,
+        "max": 113.4
+      }
+    },
+    {
+      "phase": "write: insert",
+      "requests": 3971,
+      "rps": 659.7,
+      "errorRate": 0,
+      "statuses": {
+        "201": 3971
+      },
+      "latencyMs": {
+        "p50": 45.4,
+        "p95": 70.7,
+        "p99": 85.7,
+        "max": 106.9
+      }
+    },
+    {
+      "phase": "mixed 70% read / 20% insert / 10% update",
+      "requests": 3616,
+      "rps": 601,
+      "errorRate": 0,
+      "statuses": {
+        "200": 2894,
+        "201": 722
+      },
+      "latencyMs": {
+        "p50": 50,
+        "p95": 81.6,
+        "p99": 102.6,
+        "max": 118.1
+      }
+    }
+  ],
+  "import": {
+    "rows": 5000,
+    "seconds": 2.46,
+    "rowsPerSec": 2034,
+    "status": "success",
+    "inserted": 5000
+  },
+  "server": {
+    "rssMB": 153,
+    "heapMB": 39,
+    "cacheHits": 15693,
+    "cacheMisses": 4398,
+    "pgPoolMaxConnections": 4,
+    "pgPoolWaiting": 0,
+    "cacheHitRate": 0.781
+  }
+}

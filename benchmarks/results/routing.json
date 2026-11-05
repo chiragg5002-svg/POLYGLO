@@ -1,0 +1,109 @@
+{
+  "generatedAt": "2026-10-11T02:05:03.219Z",
+  "node": "v22.22.2",
+  "datasets": 77,
+  "classCounts": {
+    "postgresql": 28,
+    "mongodb": 25,
+    "elasticsearch": 24
+  },
+  "hardCases": 11,
+  "strategies": {
+    "always-postgres": {
+      "accuracy": 0.364,
+      "correct": 28,
+      "total": 77,
+      "hardAccuracy": 0.545,
+      "hardCorrect": 6,
+      "hardTotal": 11,
+      "perClass": {
+        "postgresql": {
+          "precision": 0.364,
+          "recall": 1,
+          "support": 28
+        },
+        "mongodb": {
+          "precision": null,
+          "recall": 0,
+          "support": 25
+        },
+        "elasticsearch": {
+          "precision": null,
+          "recall": 0,
+          "support": 24
+        }
+      },
+      "latencyMs": {
+        "p50": 0,
+        "p95": 0
+      },
+      "fallbackRate": 0
+    },
+    "shape-heuristic": {
+      "accuracy": 0.987,
+      "correct": 76,
+      "total": 77,
+      "hardAccuracy": 0.909,
+      "hardCorrect": 10,
+      "hardTotal": 11,
+      "perClass": {
+        "postgresql": {
+          "precision": 1,
+          "recall": 1,
+          "support": 28
+        },
+        "mongodb": {
+          "precision": 0.962,
+          "recall": 1,
+          "support": 25
+        },
+        "elasticsearch": {
+          "precision": 1,
+          "recall": 0.958,
+          "support": 24
+        }
+      },
+      "latencyMs": {
+        "p50": 0.034,
+        "p95": 0.13
+      },
+      "fallbackRate": 0
+    },
+    "router(rule-only)": {
+      "accuracy": 1,
+      "correct": 77,
+      "total": 77,
+      "hardAccuracy": 1,
+      "hardCorrect": 11,
+      "hardTotal": 11,
+      "perClass": {
+        "postgresql": {
+          "precision": 1,
+          "recall": 1,
+          "support": 28
+        },
+        "mongodb": {
+          "precision": 1,
+          "recall": 1,
+          "support": 25
+        },
+        "elasticsearch": {
+          "precision": 1,
+          "recall": 1,
+          "support": 24
+        }
+      },
+      "latencyMs": {
+        "p50": 0.51,
+        "p95": 4.05,
+        "p99": 16.03
+      },
+      "throughputPerSec": 913,
+      "fallbackRate": 0,
+      "wrong": []
+    },
+    "router(hybrid)": {
+      "status": "NOT MEASURED: Ollama is not reachable in this environment. Run `ollama serve` + `ollama pull llama3.2:3b` and re-run this script."
+    }
+  }
+}

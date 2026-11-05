@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Billing - MAESTRO Client Portal</title>
+  <link rel="stylesheet" href="/static/client.css?v=20261022" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <a class="back-link" href="/client">MAESTRO Client Portal</a>
+      <h1>Billing</h1>
+      <p>Plan, measured usage, estimated charges, invoices, and payment status.</p>
+    </header>
+
+    <section id="billing-auth-required" class="card" hidden>
+      <h2>Sign in required</h2>
+      <p>Your client session is missing or expired. Sign in to view your private billing information.</p>
+      <a class="download-button" href="/client">Open Client Portal</a>
+    </section>
+
+    <section id="billing-page" hidden>
+      <div class="account-bar card">
+        <div><span class="muted">Signed in as</span><strong id="billing-account"></strong></div>
+        <div class="button-row">
+          <a class="portal-nav-item" href="/client">Projects</a>
+          <button type="button" id="billing-sign-out" class="secondary">Sign out</button>
+        </div>
+      </div>
+
+      <section class="card billing-dashboard" aria-labelledby="billing-title">
+        <div class="billing-heading">
+          <div>
+            <h2 id="billing-title">Billing dashboard</h2>
+            <p id="billing-period" class="muted">Current-period usage is estimated.</p>
+          </div>
+          <div class="button-row">
+            <a class="download-button" href="/v1/client/billing/export.csv">Download billing CSV</a>
+            <button id="billing-refresh" class="secondary" type="button">Refresh</button>
+          </div>
+        </div>
+        <p id="billing-status" class="status" role="status" aria-live="polite"></p>
+        <div id="billing-current-plan" class="billing-current-plan"><p class="muted">Loading plan…</p></div>
+        <h3>Available plans</h3>
+        <p class="muted">Plan changes take effect at the next billing period. No payment is processed in this portal.</p>
+        <div id="billing-plan-catalog" class="billing-plan-catalog"><p class="muted">Plans have not been loaded.</p></div>
+        <h3>Usage and estimated charges</h3>
+        <div id="billing-usage"><p class="muted">Usage has not been loaded.</p></div>
+        <h3>Payment status</h3>
+        <p id="billing-payment-summary" class="billing-payment-summary">Payment status has not been loaded.</p>
+        <h3>Invoices</h3>
+        <div id="billing-invoices"><p class="muted">No invoices loaded.</p></div>
+        <h3>Recorded payments</h3>
+        <p class="muted">These are operator-recorded payment entries; MAESTRO does not process payments.</p>
+        <div id="billing-payments"><p class="muted">No payments loaded.</p></div>
+      </section>
+    </section>
+  </main>
+  <script src="/static/client-billing.js?v=20261022"></script>
+</body>
+</html>

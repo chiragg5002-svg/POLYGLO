@@ -1,0 +1,333 @@
+/*
+ * Elasticsearch storage adapter.
+ *
+ * Layout: one index per (project, collection), named
+ * `<projectId>_<collection>` (always lowercase, validated). Documents
+ * are { id, data, createdAt, updatedAt }; client fields live under
+ * `data.*`. `data` is mapped as `flattened` so arbitrary client JSON
+ * (nested objects, arrays, unicode, nulls, differing shapes) can never
+ * cause mapping conflicts, while every leaf value stays indexed for
+ * filtering and search. Queries are assembled from validated filters with
+ * a fixed clause vocabulary (term / terms / range / exists / wildcard) —
+ * no client-supplied query DSL, scripts or query_string are accepted.
+ */
+const { Client: ESClient } = require("@elastic/elasticsearch");
+const { getConfig } = require("../dbaas/config");
+const { badRequest, duplicate } = require("../dbaas/errors");
+const { assertSafeMapping, internalStoreError } = require("./common");
+
+const MAX_WINDOW = 10000;
+const UPDATE_SCRIPT =
+  "ctx._source.data = params.data; ctx._source.updatedAt = params.updatedAt;";
+
+const statusOf = (e) => e?.meta?.statusCode ?? e?.statusCode;
+const errType = (e) => e?.meta?.body?.error?.type;
+
+// Escape the only characters that are special in an ES wildcard pattern,
+// so client text is always matched literally ("%" is not special in ES).
+const escapeWildcard = (s) => String(s).replace(/[\\*?]/g, "\\$&");
+
+class ElasticsearchAdapter {
+  constructor({ clientFactory } = {}) {
+    this._factory =
+      clientFactory ||
+      (() =>
+        new ESClient({
+          node: getConfig().elasticsearchUrl(),
+          requestTimeout: getConfig().dbTimeoutMs,
+          maxRetries: 0,
+        }));
+    this._client = null;
+    this._mappingCache = new Map();
+    this.dbType = "elasticsearch";
+  }
+
+  _es() {
+    if (!this._client) this._client = this._factory();
+    return this._client;
+  }
+
+  async close() {
+    if (this._client && this._client.close)
+      await this._client.close().catch(() => {});
+    this._client = null;
+  }
+
+  async ping() {
+    await this._es().ping();
+    return true;
+  }
+
+  _index(mapping) {
+    assertSafeMapping(mapping);
+    const expected = `${mapping.project_id}_${mapping.collection}`;
+    if (mapping.physical_name !== expected)
+      throw new Error("Mapping/index mismatch.");
+    return expected;
+  }
+
+  async plan({ projectId, collection }) {
+    return {
+      database_name: null,
+      physical_name: `${projectId}_${collection}`,
+      schema: null,
+    };
+  }
+
+  async createStorage(mapping) {
+    const index = this._index(mapping);
+    try {
+      await this._es().indices.create({
+        index,
+        settings: { number_of_shards: 1, number_of_replicas: 0 },
+        mappings: {
+          properties: {
+            id: { type: "keyword" },
+            // flattened: indexes every leaf value as a keyword under
+            // data.<path> without per-field dynamic mappings, so documents
+            // with different JSON shapes never conflict.
+            data: { type: "flattened" },
+            createdAt: { type: "date" },
+            updatedAt: { type: "date" },
+          },
+        },
+      });
+    } catch (e) {
+      if (errType(e) !== "resource_already_exists_exception")
+        throw internalStoreError("elasticsearch createStorage", e);
+    }
+  }
+
+  _toDoc(source) {
+    return source
+      ? {
+          id: source.id,
+          data: source.data || {},
+          createdAt: source.createdAt,
+          updatedAt: source.updatedAt,
+        }
+      : null;
+  }
+
+  async create(mapping, { id, data }) {
+    const index = this._index(mapping);
+    const now = new Date().toISOString();
+    const document = { id, data, createdAt: now, updatedAt: now };
+    try {
+      await this._es().index({
+        index,
+        id,
+        document,
+        op_type: "create",
+        refresh: true,
+      });
+      return this._toDoc(document);
+    } catch (e) {
+      if (statusCode409(e)) throw duplicate();
+      throw internalStoreError("elasticsearch create", e);
+    }
+  }
+
+  async findOne(mapping, id) {
+    const index = this._index(mapping);
+    try {
+      const r = await this._es().get({ index, id });
+      return this._toDoc(r._source);
+    } catch (e) {
+      if (statusOf(e) === 404) return null;
+      throw internalStoreError("elasticsearch findOne", e);
+    }
+  }
+
+  async update(mapping, id, data) {
+    const index = this._index(mapping);
+    try {
+      await this._es().update({
+        index,
+        id,
+        refresh: true,
+        script: {
+          lang: "painless",
+          source: UPDATE_SCRIPT,
+          params: { data, updatedAt: new Date().toISOString() },
+        },
+      });
+      return this.findOne(mapping, id);
+    } catch (e) {
+      if (statusOf(e) === 404) return null;
+      throw internalStoreError("elasticsearch update", e);
+    }
+  }
+
+  async delete(mapping, id) {
+    const index = this._index(mapping);
+    try {
+      const r = await this._es().delete({ index, id, refresh: true });
+      return r.result === "deleted";
+    } catch (e) {
+      if (statusOf(e) === 404) return false;
+      throw internalStoreError("elasticsearch delete", e);
+    }
+  }
+
+  // Resolves how to reference a field for sorting: text fields can't be
+  // sorted directly, so use their .keyword sub-field when present.
+  // Fields under the flattened `data` mapping are keyword-like and sort directly.
+  async _sortField(index, path) {
+    let props = this._mappingCache.get(index);
+    if (!props || Date.now() - props.at > 10000) {
+      const r = await this._es().indices.getMapping({ index });
+      props = { at: Date.now(), value: r[index]?.mappings?.properties || {} };
+      this._mappingCache.set(index, props);
+    }
+    let node = props.value.data;
+    if (node?.type === "flattened") return `data.${path}`;
+    for (const seg of path.split(".")) {
+      node = node?.properties?.[seg];
+      if (!node) break;
+    }
+    if (node?.type === "text")
+      return node.fields?.keyword ? `data.${path}.keyword` : null;
+    return `data.${path}`;
+  }
+
+  _eqClause(field, value) {
+    return { term: { [`data.${field}`]: value } };
+  }
+
+  _buildQuery(spec) {
+    const filter = [];
+    const mustNot = [];
+    const must = [];
+    for (const { field, operator, value } of spec.filters || []) {
+      if (operator === "eq") {
+        if (value === null)
+          mustNot.push({ exists: { field: `data.${field}` } });
+        else filter.push(this._eqClause(field, value));
+      } else if (operator === "ne") {
+        if (value === null) filter.push({ exists: { field: `data.${field}` } });
+        else mustNot.push(this._eqClause(field, value));
+      } else if (operator === "in") {
+        const nonNull = value.filter((v) => v !== null);
+        const should = [];
+        if (nonNull.length)
+          should.push({ terms: { [`data.${field}`]: nonNull } });
+        if (value.includes(null))
+          should.push({
+            bool: { must_not: [{ exists: { field: `data.${field}` } }] },
+          });
+        filter.push({ bool: { should, minimum_should_match: 1 } });
+      } else {
+        filter.push({ range: { [`data.${field}`]: { [operator]: value } } });
+      }
+    }
+    if (spec.queryType === "search" && spec.text) {
+      // Case-insensitive literal substring match. Client text is escaped so
+      // it can never act as a wildcard; "%" is not special in ES at all.
+      const pattern = `*${escapeWildcard(spec.text)}*`;
+      const targets =
+        spec.fields && spec.fields.length
+          ? spec.fields.map((f) => `data.${f}`)
+          : ["data"];
+      must.push({
+        bool: {
+          should: targets.map((t) => ({
+            wildcard: { [t]: { value: pattern, case_insensitive: true } },
+          })),
+          minimum_should_match: 1,
+        },
+      });
+    }
+    if (!filter.length && !mustNot.length && !must.length)
+      return { match_all: {} };
+    return { bool: { filter, must_not: mustNot, must } };
+  }
+
+  async find(mapping, spec) {
+    const index = this._index(mapping);
+    if ((spec.offset || 0) + spec.limit > MAX_WINDOW) {
+      throw badRequest(
+        `offset + limit may not exceed ${MAX_WINDOW} for Elasticsearch-backed collections.`,
+      );
+    }
+    try {
+      let sort = [{ createdAt: "asc" }, { id: "asc" }];
+      if (spec.sort) {
+        const field = await this._sortField(index, spec.sort.field);
+        if (!field)
+          throw badRequest(`Field "${spec.sort.field}" cannot be sorted.`);
+        sort = [
+          { [field]: { order: spec.sort.direction, unmapped_type: "keyword" } },
+          { id: "asc" },
+        ];
+      }
+      const r = await this._es().search({
+        index,
+        query: this._buildQuery(spec),
+        size: spec.limit,
+        from: spec.offset || 0,
+        sort,
+      });
+      const results = (r.hits?.hits || []).map((h) => this._toDoc(h._source));
+      return { results, resultCount: results.length };
+    } catch (e) {
+      if (e.name === "DbaasError") throw e;
+      throw internalStoreError("elasticsearch find", e);
+    }
+  }
+
+  async count(mapping, spec) {
+    const index = this._index(mapping);
+    try {
+      const r = await this._es().count({
+        index,
+        query: this._buildQuery(spec),
+      });
+      return r.count;
+    } catch (e) {
+      throw internalStoreError("elasticsearch count", e);
+    }
+  }
+
+  async query(mapping, spec) {
+    if (spec.queryType === "count")
+      return { results: [], resultCount: await this.count(mapping, spec) };
+    return this.find(mapping, spec);
+  }
+
+  async storageBytes(mapping) {
+    try {
+      const r = await this._es().indices.stats({
+        index: this._index(mapping),
+        metric: "store",
+      });
+      const size = r._all && r._all.total && r._all.total.store && r._all.total.store.size_in_bytes;
+      if (size === null || size === undefined) throw new Error("Elasticsearch did not return an index storage size.");
+      if (!Number.isSafeInteger(Number(size)) || Number(size) < 0) throw new Error("Elasticsearch did not return a valid index storage size.");
+      return Number(size);
+    } catch (e) {
+      throw internalStoreError("elasticsearch storage measurement", e);
+    }
+  }
+
+  async dropStorage(mapping) {
+    const index = this._index(mapping);
+    try {
+      await this._es().indices.delete({ index, ignore_unavailable: true });
+      this._mappingCache.delete(index);
+    } catch (e) {
+      throw internalStoreError("elasticsearch dropStorage", e);
+    }
+  }
+
+  async dropProjectStorage(projectId, mappings) {
+    for (const m of mappings)
+      if (m.db_type === "elasticsearch") await this.dropStorage(m);
+  }
+}
+
+function statusCode409(e) {
+  return statusOf(e) === 409;
+}
+
+module.exports = { ElasticsearchAdapter };

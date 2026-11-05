@@ -1,0 +1,6 @@
+[
+  { "id": 1, "customer_id": 100, "total": 49.99, "items": [{ "sku": "SKU-1001", "qty": 1 }] },
+  { "id": 2, "customer_id": 101, "total": 229.50, "items": [{ "sku": "SKU-1002", "qty": 1 }, { "sku": "SKU-1003", "qty": 1 }] },
+  { "id": 3, "customer_id": 102, "total": 12.99, "items": [{ "sku": "SKU-1004", "qty": 1 }] },
+  { "id": 4, "customer_id": 100, "total": 158.50, "items": [{ "sku": "SKU-1003", "qty": 1 }, { "sku": "SKU-1004", "qty": 1 }] }
+]
